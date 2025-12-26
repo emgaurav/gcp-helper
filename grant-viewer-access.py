@@ -13,9 +13,16 @@ import sys
 import time
 import threading
 import warnings
+import logging
 
-# Suppress harmless httplib2 timeout warnings
+# Suppress harmless httplib2 timeout warnings at multiple levels
 warnings.filterwarnings('ignore', message='.*httplib2.*timeout.*')
+logging.captureWarnings(True)
+logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
+
+# Suppress the specific httplib2 warning
+import os
+os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning'
 
 try:
     import googleapiclient.discovery
