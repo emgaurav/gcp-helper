@@ -3,6 +3,7 @@
 """
 Grant Viewer Access to All GCP Projects
 This script grants read-only IAM permissions to a user/service account across all projects.
+Use case: Resource inventory, auditing, compliance scanning, cost analysis.
 Runs in parallel for efficiency with thousands of projects.
 """
 
@@ -11,6 +12,10 @@ import concurrent.futures
 import sys
 import time
 import threading
+import warnings
+
+# Suppress harmless httplib2 timeout warnings
+warnings.filterwarnings('ignore', message='.*httplib2.*timeout.*')
 
 try:
     import googleapiclient.discovery
@@ -33,25 +38,25 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog="""
 Examples:
+  # Fast check: List projects that would be processed (instant)
+  python3 grant-viewer-access.py --all --check-only
+  
+  # Dry run: Simulate what would happen (no changes)
+  python3 grant-viewer-access.py --all --dry-run --max-workers 100
+  
   # Grant Viewer role to current authenticated user on all projects
-  python3 grant-viewer-access.py --all
+  python3 grant-viewer-access.py --all --max-workers 300
   
   # Grant to specific user
-  python3 grant-viewer-access.py --all --user user@example.com
+  python3 grant-viewer-access.py --all --user user@example.com --max-workers 300
   
-  # Grant to service account
+  # Grant to service account (for automation/CI/CD)
   python3 grant-viewer-access.py --all --service-account sa@project.iam.gserviceaccount.com
-  
-  # Use custom role with specific permissions
-  python3 grant-viewer-access.py --all --role roles/browser
-  
-  # Higher parallelism for faster execution
-  python3 grant-viewer-access.py --all --max-workers 300
 
 Recommended Roles:
-  roles/viewer              - Full read access (recommended for inventory)
+  roles/viewer              - Full read access (recommended for inventory/auditing)
   roles/browser             - Minimal read access (project metadata only)
-  Custom role               - Create with specific permissions needed
+  Custom role               - Create with specific permissions for your use case
     """
 )
 
@@ -104,7 +109,14 @@ parser.add_argument(
     '--check-only',
     action='store_true',
     dest='check_only',
-    help='Only check current permissions, do not grant access',
+    help='Fast mode: List projects that would be processed without checking individual permissions',
+    default=False
+)
+parser.add_argument(
+    '--verify-access',
+    action='store_true',
+    dest='verify_access',
+    help='Verify current permissions on each project (slower, thorough check)',
     default=False
 )
 
@@ -276,11 +288,12 @@ def grant_iam_permission(project_id, member, role):
                 'message': f'Already has {role}'
             }
         
-        if args.dry_run or args.check_only:
+        if args.dry_run or args.verify_access:
+            status_msg = f'Would grant {role}' if args.dry_run else 'Access verified - no changes made'
             return {
                 'project_id': project_id,
-                'status': 'would_grant',
-                'message': f'Would grant {role}'
+                'status': 'would_grant' if args.dry_run else 'verified',
+                'message': status_msg
             }
         
         # Grant the permission
@@ -346,8 +359,8 @@ def process_projects_parallel(projects, member, role):
     
     if args.dry_run:
         print("\n*** DRY RUN MODE - No changes will be made ***\n")
-    elif args.check_only:
-        print("\n*** CHECK ONLY MODE - No changes will be made ***\n")
+    elif args.verify_access:
+        print("\n*** VERIFY ACCESS MODE - Checking permissions, no changes will be made ***\n")
     
     start_time = time.time()
     completed = 0
@@ -373,6 +386,7 @@ def process_projects_parallel(projects, member, role):
                     'granted': '✓',
                     'already_granted': '→',
                     'would_grant': '?',
+                    'verified': '✓',
                     'failed': '✗'
                 }.get(result['status'], '?')
                 
@@ -427,8 +441,29 @@ def main():
         print("ERROR: No projects to process")
         sys.exit(1)
     
+    # Fast check-only mode: just list projects
+    if args.check_only:
+        print(f"\n{'='*80}")
+        print("CHECK-ONLY MODE: Projects that would be processed")
+        print(f"{'='*80}")
+        print(f"\nTotal: {len(projects)} projects")
+        print(f"\nOperation that would be performed:")
+        print(f"  Member: {member}")
+        print(f"  Role: {args.role}")
+        print(f"\nFirst 20 projects:")
+        for i, project_id in enumerate(projects[:20], 1):
+            print(f"  {i:4d}. {project_id}")
+        if len(projects) > 20:
+            print(f"  ... and {len(projects) - 20} more projects")
+        print(f"\n{'='*80}")
+        print("To proceed, run without --check-only flag")
+        print("To test without changes: add --dry-run flag")
+        print("To verify access on each project: use --verify-access (slower)")
+        print(f"{'='*80}")
+        return
+    
     # Confirm before proceeding
-    if not args.dry_run and not args.check_only:
+    if not args.dry_run and not args.verify_access:
         print(f"\n{'!'*80}")
         print(f"WARNING: About to modify IAM policies on {len(projects)} projects")
         print(f"{'!'*80}")
